@@ -96,10 +96,12 @@ open "ccfocus://8c328af1-398c-40ee-94ca-20ff53a825be"
 In HTML or Markdown surfaces, `<a href="ccfocus://Fleet%20babysit">` works anywhere
 custom-scheme anchors are allowed. Browsers gate the click behind an
 "Open ClaudeSessionFocus?" confirmation, which is expected. Sandboxed webviews
-(inline chat widgets, some embeds) block custom-scheme navigation and blank the
-frame instead of opening the link; in those, route through the host's link bridge
-(for example `openLink()` in Claude inline widgets) or fall back to a copyable
-`open "ccfocus://..."` command.
+(inline chat widgets, some embeds) are a different story: custom-scheme
+navigation blanks the frame instead of opening the link, and host link bridges
+may refuse custom schemes outright (Claude inline widgets do, for both raw
+anchors and `openLink()`). In those surfaces fall back to a copyable
+`open "ccfocus://..."` command, or have the agent run the `open` command (in
+Claude widgets: a `sendPrompt` button that asks the session to run it).
 
 ## Matching semantics
 

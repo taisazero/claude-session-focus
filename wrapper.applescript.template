@@ -1,0 +1,19 @@
+-- ClaudeSessionFocus.app: handles ccfocus://<percent-encoded title substring>
+-- and shells out to the claude-session-focus CLI, logging to last-run.log.
+-- __TOOL_DIR__ is replaced with the repo directory by install.sh.
+
+on open location theURL
+	set toolDir to "__TOOL_DIR__"
+	set logFile to toolDir & "/last-run.log"
+	set cli to toolDir & "/claude-session-focus"
+	do shell script "echo \"[$(date '+%Y-%m-%d %H:%M:%S')] \" " & quoted form of theURL & " >> " & quoted form of logFile & "; " & quoted form of cli & " " & quoted form of theURL & " >> " & quoted form of logFile & " 2>&1"
+end open location
+
+on run
+	display dialog "ClaudeSessionFocus handles ccfocus:// links.
+
+Usage: open \"ccfocus://<session title substring>\"
+(spaces as %20)
+
+It focuses the matching session in the Claude desktop app without forking it." buttons {"OK"} default button "OK" with title "ClaudeSessionFocus"
+end run

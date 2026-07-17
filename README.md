@@ -6,7 +6,8 @@ Fork-free deeplinks to Claude desktop (Claude Code) sessions on macOS.
 desktop app. No snapshot fork, no duplicate session.
 
 ```sh
-open "ccfocus://RCA%20investigation"
+open "ccfocus://RCA%20investigation"                          # by title substring
+open "ccfocus://8c328af1-398c-40ee-94ca-20ff53a825be"         # by session id
 ```
 
 ## The problem this solves
@@ -85,6 +86,11 @@ open "ccfocus://Fleet%20babysit"
 ./claude-session-focus "fleet babysit"     # focus best match
 ./claude-session-focus --dry "fleet"       # show what would be pressed
 ./claude-session-focus --list              # list visible rows
+
+# session-id forms: a Claude Code CLI uuid or the app's local_<uuid> both work
+# and resolve to the session's CURRENT title, so id links survive renames:
+open "ccfocus://8c328af1-398c-40ee-94ca-20ff53a825be"
+./claude-session-focus "local_887f7696-63ba-46ef-a097-905ff611d282"
 ```
 
 In HTML or Markdown surfaces, `<a href="ccfocus://Fleet%20babysit">` works anywhere
@@ -97,6 +103,11 @@ frame instead of opening the link; in those, route through the host's link bridg
 
 ## Matching semantics
 
+- A query shaped like a session id (uuid, or `local_<uuid>`) is first resolved to
+  the session's current title via `~/Library/Logs/Claude/main.log`:
+  "Mapping internal session" lines map CLI uuids to app-local ids, and
+  "LocalSessions.updateSession" lines map local ids to titles. Last write wins,
+  so renamed sessions resolve to their current title.
 - Case-insensitive. Exact title match wins, then substring.
 - The sidebar prefixes running sessions with `Running `; matching ignores it.
 - The shallowest match in the accessibility tree wins, which prefers sidebar rows
@@ -106,13 +117,15 @@ frame instead of opening the link; in those, route through the host's link bridg
 - Duplicate titles resolve to the first match; use a longer substring.
 
 Exit codes: `0` focused, `2` no match, `3` press failed, `4` Accessibility not
-granted, `5` Claude app not running.
+granted, `5` Claude app not running, `6` session id not resolvable from app logs.
 
 ## Limitations
 
-- Title-based only. Session titles live in the app's binary IndexedDB, so there is
-  no reliable uuid-to-title resolver; pass titles. Retitled sessions break old
-  links: regenerate them.
+- Id resolution depends on the app's log window: `main.log` (plus `main.log.old`)
+  must still contain the session's mapping and title lines. Old sessions rotate
+  out; resolution failure exits 6 and a title substring still works. Prefer id
+  links for durability (they re-resolve the current title at click time; title
+  links break on rename).
 - Sessions older than the load-more window are not reachable yet. Fallback ideas:
   drive the sidebar search button (accessibility desc "Search"), or list archived
   sessions through the app's session-management MCP from inside a session.

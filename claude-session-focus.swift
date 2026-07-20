@@ -62,14 +62,44 @@ func looksLikeSessionId(_ s: String) -> Bool {
                       options: .regularExpression) != nil
 }
 
+// Primary title source: the app's durable session store. One JSON per session at
+// ~/Library/Application Support/Claude/claude-code-sessions/<org>/<user>/local_<id>.json
+// with sessionId (local), cliSessionId, and title. Survives log rotation and app updates
+// (the current app version no longer logs LocalSessions.updateSession lines at all).
+func resolveTitleFromStore(forSessionId raw: String) -> String? {
+    let id = (raw.hasPrefix("local_") ? String(raw.dropFirst("local_".count)) : raw).lowercased()
+    let root = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions")
+    guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return nil }
+    for case let url as URL in e where url.lastPathComponent.hasPrefix("local_") && url.pathExtension == "json" {
+        guard let data = try? Data(contentsOf: url),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
+        let localId = ((obj["sessionId"] as? String) ?? "").lowercased()
+        let cliId = ((obj["cliSessionId"] as? String) ?? "").lowercased()
+        if localId == "local_" + id || localId == id || cliId == id {
+            if let t = obj["title"] as? String, !t.isEmpty { return t }
+        }
+    }
+    return nil
+}
+
+// Fallback title source: app logs (older app versions only).
 func resolveTitle(forSessionId raw: String) -> String? {
+    if let t = resolveTitleFromStore(forSessionId: raw) { return t }
     let id = raw.hasPrefix("local_") ? String(raw.dropFirst("local_".count)) : raw
     let logsDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/Claude")
-    // oldest first so newer files overwrite stale titles/mappings
-    let files = ["main.log.old", "main.log"]
+    // The app rotates main.log to numbered siblings (main2.log = most recent rotation,
+    // main4.log = oldest), not main.log.old (kept for back-compat). Read every candidate
+    // oldest-first by modification date so newer files overwrite stale titles/mappings.
+    let candidates = ((try? FileManager.default.contentsOfDirectory(atPath: logsDir.path)) ?? [])
+        .filter { $0 == "main.log.old" || $0.range(of: "^main[0-9]*\\.log$", options: .regularExpression) != nil }
         .map { logsDir.appendingPathComponent($0).path }
-        .filter { FileManager.default.fileExists(atPath: $0) }
+    let files = candidates.sorted { a, b in
+        let ma = (try? FileManager.default.attributesOfItem(atPath: a)[.modificationDate] as? Date) ?? nil
+        let mb = (try? FileManager.default.attributesOfItem(atPath: b)[.modificationDate] as? Date) ?? nil
+        return (ma ?? .distantPast) < (mb ?? .distantPast)
+    }
     var cliToLocal: [String: String] = [:]
     var titles: [String: String] = [:]
     for f in files {
@@ -105,7 +135,7 @@ func resolveTitle(forSessionId raw: String) -> String? {
 var resolvedNote: String? = nil
 if !listOnly && !query.isEmpty && looksLikeSessionId(query) {
     guard let t = resolveTitle(forSessionId: query) else {
-        fail(6, "Could not resolve session id \"\(query)\" to a title via ~/Library/Logs/Claude/main.log (rotated out, or the session was never titled there). Pass a title substring instead.")
+        fail(6, "Could not resolve session id \"\(query)\" to a title via the app session store (~/Library/Application Support/Claude/claude-code-sessions) or the app logs. Pass a title substring instead.")
     }
     resolvedNote = "resolved: \(query) -> \"\(t)\""
     query = t.lowercased()
@@ -122,6 +152,28 @@ guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleI
 let appEl = AXUIElementCreateApplication(app.processIdentifier)
 AXUIElementSetAttributeValue(appEl, "AXManualAccessibility" as CFString, kCFBooleanTrue)
 usleep(400_000)
+
+// ---- no-window guard ----
+// A running app with zero windows has no sidebar to press (observed live: closed main
+// window -> scan sees only the 201-element app shell). When focusing, reopen the window
+// (equivalent of clicking the Dock icon) and wait for it; for --list/--dry, say so.
+func windowCount() -> Int {
+    ((axVal(appEl, kAXWindowsAttribute as String) as? [AXUIElement]) ?? []).count
+}
+if windowCount() == 0 {
+    if listOnly || dryRun {
+        fail(5, "Claude desktop app is running but has no open window -- open one, then retry.")
+    }
+    if let url = app.bundleURL {
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+    }
+    var waited = 0
+    while windowCount() == 0 && waited < 16 { usleep(500_000); waited += 1 }
+    if windowCount() == 0 {
+        fail(5, "Claude desktop app has no window and reopening it timed out -- open the app manually, then retry.")
+    }
+    usleep(1_200_000) // let the sidebar render before scanning
+}
 
 // ---- AX helpers ----
 func axVal(_ el: AXUIElement, _ attr: String) -> AnyObject? {
@@ -177,7 +229,16 @@ func bestMatch(_ rows: [Row]) -> Row? {
 }
 
 // ---- main ----
+// Cold-start guard: when launched via the wrapper app while the desktop app is idle,
+// the AX tree may not be populated yet (observed as "no match, no Load more button,
+// 0 rounds"). Rescan with a delay until rows appear or ~6s passes.
 var (rows, loadMore) = scan()
+var warmupTries = 0
+while rows.isEmpty && warmupTries < 8 {
+    usleep(750_000)
+    (rows, loadMore) = scan()
+    warmupTries += 1
+}
 
 if listOnly {
     for r in rows where r.depth <= 24 { print(r.title) }
